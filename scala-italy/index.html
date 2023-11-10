@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <title>SNUnit: scaling down HTTP services with Scala Native and NGINX Unit</title>
+
+  <link rel="stylesheet" href="dist/reset.css">
+  <link rel="stylesheet" href="dist/reveal.css">
+  <link rel="stylesheet" href="dist/theme/white.css">
+
+  <!-- Theme used for syntax highlighted code -->
+  <link rel="stylesheet" href="plugin/highlight/monokai.css">
+  <style>
+    .reveal h1,
+    .reveal h2,
+    .reveal h3,
+    .reveal h4,
+    .reveal h5,
+    .reveal h6 {
+      text-transform: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="reveal">
+    <div class="slides" style="text-align: left;">
+      <section>
+        <h1>SNUnit</h1>
+        <h3>scaling down HTTP services with Scala Native and NGINX Unit</h3>
+      </section>
+      <section>
+        <section>
+          <h1>About me</h1>
+          <p class="fragment">Hi, I'm lolgab 👋</p>
+          <span class="fragment">I'm a:</span>
+          <ul>
+            <li class="fragment">Computer Engineer</li>
+            <li class="fragment">Open Source contributor</li>
+            <li class="fragment">Maintainer of the com-lihaoyi ecosystem</li>
+            <li class="fragment">backend engineer working with Scala professionally for the last 4 years</li>
+          </ul>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h1>Agenda</h1>
+          <ul>
+            <li class="fragment">Scala Native</li>
+            <li class="fragment">NGINX Unit</li>
+            <li class="fragment">SNUnit</li>
+            <li class="fragment">SNUnit internals</li>
+            <li class="fragment">Demo app</li>
+            <li class="fragment">What's coming next?</li>
+            <li class="fragment">Conclusions</li>
+          </ul>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h1>Scala Native</h1>
+          <img data-src="images/scala-native.jpg" alt="">
+        </section>
+        <section>
+          <h3>What is Scala Native?</h3>
+          <ul>
+            <li class="fragment">Scala dialect that compiles to <strong>native binaries</strong> instead of JVM bytecode
+            </li>
+            <li class="fragment">Uses the Clang <strong>C++ toolchain</strong> to generate native binaries</li>
+            <li class="fragment">Requires a <strong>scalac/dotty plugin</strong> which compiles Scala sources to a
+              bytecode called
+              <strong>NIR</strong>
+            </li>
+            <li class="fragment">Requires a <strong>linking</strong> phase which links NIR files together, performing
+              <strong>whole program optimization</strong>
+            </li>
+          </ul>
+        </section>
+        <section>
+          <h3>Pros</h3>
+          <ul>
+            <li class="fragment">No JVM required (at runtime)</li>
+            <li class="fragment">Small executables</li>
+            <li class="fragment">Instant startup</li>
+            <li class="fragment">No warmup</li>
+            <li class="fragment">Lower memory usage</li>
+            <li class="fragment">Easy interoperability with <strong>C libraries</strong></li>
+          </ul>
+        </section>
+        <section>
+          <h3>Cons</h3>
+          <ul>
+            <li class="fragment"><strong>Can't</strong> use Java libraries</li>
+            <li class="fragment">All your Scala libraries need to be published for Scala Native</li>
+            <li class="fragment">No multithreading yet</li>
+            <li class="fragment">Compile <del>once</del> everywhere, run everywhere</li>
+            <li class="fragment">Worse peak performance compared to JVM</li>
+            <li class="fragment">Long build times</li>
+          </ul>
+        </section>
+      </section>
+      <section>
+        <section data-background="#404040">
+          <img src="images/unit.svg" alt="">
+        </section>
+        <section>
+          <h3>What is NGINX Unit</h3>
+          <ul>
+            <li class="fragment">It's <strong>NOT</strong> NGINX</li>
+            <li class="fragment">
+              It's a classic HTTP server
+              <ul>
+                <li class="fragment">Can serves static files</li>
+                <li class="fragment">Can manages TLS certificates and HTTPS</li>
+                <li class="fragment">Can proxy requests to other servers</li>
+              </ul>
+            </li>
+            <li class="fragment">It's configurable via a JSON file or a REST API</li>
+            <li class="fragment">It's an application server</li>
+          </ul>
+        </section>
+        <section>
+          <h3>Why it's interesting for Scala Native</h3>
+          <ul>
+            <li class="fragment">It implements the HTTP stack for us</li>
+            <li class="fragment">It provides a easy to use C API</li>
+            <li class="fragment">Can run multiple processes of applications with load balancing</li>
+            <li class="fragment">Supports concurrency and asyncrony at application level</li>
+            <li class="fragment">It's fast</li>
+          </ul>
+        </section>
+        <section>
+          <h3>Basic JSON configuration</h3>
+          <pre><code class="hljs json" data-trim data-line-numbers>
+            {
+              "listeners": {
+                "*:8080": {
+                  "pass": "routes"
+                }
+              },
+              "routes": [
+                {
+                  "action": {
+                    "share": "static/$uri"
+                  }
+                }
+              ]
+            }            
+          </code></pre>
+        </section>
+        <section>
+          <h3>Application JSON configuration</h3>
+          <pre><code class="hljs json" data-trim data-line-numbers>
+            {
+              "listeners": {
+                "*:8080": {
+                  "pass": "applications/myapp"
+                }
+              },
+              "applications": {
+                "myapp": {
+                  "executable": "out",
+                  "type": "external",
+                }
+              }
+            }
+          </code></pre>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h1>SNUnit</h1>
+        </section>
+        <section>
+          <h3>What is SNUnit?</h3>
+          <ul>
+            <li class="fragment">Scala Native library to interface with NGINX Unit</li>
+            <li class="fragment">Uses the <code>external</code> mode</li>
+            <li class="fragment">Scala Native application runs on a separate process</li>
+            <li class="fragment">Interfaces with the NGINX Unit server via IPC sockets and shared memory</li>
+            <li class="fragment">Communication is handled by the <code>libunit.a</code> lib</li>
+            <li class="fragment">Thin middle layer between your favorite HTTP Scala libraries and libunit</li>
+          </ul>
+        </section>
+        <section>
+          <div class="r-rstack justify-center">
+            <div
+              style="background: lightblue; display: flex; justify-content: center; align-items: center; margin: 20px;">
+              Application Code
+            </div>
+            <div
+              style="background: lightpink; display: flex; justify-content: center; align-items: center; margin: 20px;">
+              Your favorite Scala lib (tapir, http4s, cask, etc.)
+            </div>
+            <div
+              style="background: lightgray; display: flex; justify-content: center; align-items: center; margin: 20px;">
+              SNUnit
+            </div>
+            <div
+              style="background: green; color: white; display: flex; justify-content: center; align-items: center; margin: 20px;">
+              libunit (NGINX Unit)
+            </div>
+            <!-- <div style="background: lightgray; flex: 0 0 120px; margin: 20px;">
+              
+            </div>
+            <div style="background: lightgreen; flex: 0 0 120px; margin: 20px;">
+              
+            </div>
+            <div style="background: green; color: white; flex: 0 0 120px; margin: 20px;">
+              libunit (NGINX Unit)
+            </div> -->
+          </div>
+        </section>
+        <section>
+          <h3>Supported APIs</h3>
+        </section>
+        <section>
+          <h3>TAPIR</h3>
+          <img style="width: 40%;" src="/images/tapir.png" alt="tapir logo">
+        </section>
+        <section>
+          <h2 data-id="code-title">Tapir Id hello world</h3>
+            <pre><code class="hljs scala" data-trim data-line-numbers="3-10|10-15">
+            import snunit.tapir.SNUnitIdServerInterpreter._
+            import sttp.tapir._
+
+            val helloWorld = endpoint.get
+              .in("hello")
+              .in(query[String]("name"))
+              .out(stringBody)
+              .serverLogicSuccess[Id](name => s"Hello $name!")
+
+            @main
+            def run =
+              snunit.SyncServerBuilder
+                .setRequestHandler(toHandler(List(helloWorld)))
+                .build()
+                .listen()
+          </code></pre>
+        </section>
+        <section>
+          <h2 data-id="code-title">Tapir cats-effect</h3>
+            <pre><code class="hljs scala" data-trim data-line-numbers="3-8|10-13">
+            import cats.effect._
+            import sttp.tapir._
+
+            val helloWorld = endpoint.get
+              .in("hello")
+              .in(query[String]("name"))
+              .out(stringBody)
+              .serverLogicSuccess[IO](name => IO(s"Hello $name!"))
+
+            object Main extends snunit.TapirApp:
+              def serverEndpoints
+                  :Resource[IO, List[ServerEndpoint[IO, Any]]] =
+                Resource.pure(List(helloWorld))
+          </code></pre>
+        </section>
+        <section>
+          <img style="width: 40%;" src="/images/http4s.svg" alt="http4s">
+          <pre><code class="hljs scala" data-trim data-line-numbers="5-11|13-14">
+            import cats.effect._
+            import org.http4s._
+            import org.http4s.dsl.io._
+
+            def helloRoutes = Resource.pure(
+              HttpRoutes
+                .of[IO] { case GET -> Root =>
+                  Ok("Hello Http4s App!")
+                }
+                .orNotFound
+            )
+
+            object Main extends snunit.Http4sApp:
+              def routes: Resource[IO, HttpApp[IO]] = helloRoutes
+          </code></pre>
+        </section>
+        <section>
+          <h3>cask</h3>
+          <pre><code class="hljs scala" data-trim data-line-numbers>
+            object main extends cask.MainRoutes:
+
+              @cask.get("/hello")
+              def hello(name: String) =
+                s"Hello $name!"
+
+              @cask.post("/do-thing")
+              def doThing(request: cask.Request) =
+                request.text().reverse
+
+              initialize()            
+          </code></pre>
+        </section>
+        <section>
+          <h3>your own integration</h3>
+          <pre><code class="hljs scala" data-trim data-line-numbers>
+            ???
+          </code></pre>
+        </section>
+      </section>
+      <section>
+        <h1>SNUnit Internals</h1>
+      </section>
+      <section>
+        <h1>Live Demo</h1>
+      </section>
+      <section>
+        <section>
+          <h1>What's coming next?</h1>
+        </section>
+        <section>
+          <h3>in SNUnit</h3>
+          <ul>
+            <li class="fragment"><a href="https://github.com/lolgab/snunit/issues/136">#136</a> Tapir websocket support
+            </li>
+            <li class="fragment"><a href="https://github.com/lolgab/snunit/issues/136">#135</a> http4s websocket support
+            </li>
+            <li class="fragment">endpoints4s support</li>
+            <li class="fragment">Your proposals :)</li>
+          </ul>
+        </section>
+        <section>
+          <h3>in NGINX Unit</h3>
+          <ul>
+            <li class="fragment"><a href="https://github.com/nginx/unit/issues/764">#764</a> Chained route actions for a
+              request
+              processing pipeline</li>
+            <li class="fragment"><a href="https://github.com/nginx/unit/issues/511">#511</a> <code>io_uring</code>
+              support</li>
+            <li class="fragment"><a href="https://github.com/nginx/unit/issues/554">#554</a> Support <code>QUIC</code>
+              and
+              <code>HTTP/3</code>
+            </li>
+          </ul>
+        </section>
+      </section>
+      <section>
+        <section>
+          <h1>Conclusions</h1>
+        </section>
+        <section>
+          <h3>Is Scala Native low level Scala?</h3>
+          <ul>
+            <li class="fragment"><strong>Yes</strong>, Scala Native allows manual memory management, using system calls
+              directly, etc.
+            </li>
+            <li class="fragment"><strong>No</strong>, above the implementation layer of libraries like SNUnit or
+              porcupine, it's just plain old Scala</li>
+          </ul>
+        </section>
+        <section>
+          <h3>Is it worth it to leave the JVM?</h3>
+          <ul>
+            <li class="fragment">Probably not, you'll lose:
+              <ul>
+                <li class="fragment">immense battle tested ecosystem of libraries</li>
+                <li class="fragment">great performance</li>
+                <li class="fragment">everything <strong>just works</strong></li>
+              </ul>
+            </li>
+          </ul>
+        </section>
+        <section>
+          <h3>So, should I use SNUnit or not?</h3>
+          <span>If:</span>
+          <ul>
+            <li class="fragment">your stack is supported (e. g., <code>http4s</code> + <code>skunk</code>)</li>
+            <li class="fragment">you want to run on smaller machines (and save 💸)</li>
+            <li class="fragment">you want to run in a serverless environment</li>
+            <li class="fragment">you want to implement some endpoints in other languages (PHP, Python, Ruby, Go,
+              Javascript, etc.)</li>
+            <li class="fragment">you want to delegate more things to the infrastructure, like static files sharing, TLS,
+              certificates, etc.</li>
+          </ul>
+        </section>
+        <section>
+          <h3>Then you should consider using SNUnit</h3>
+          <p>It's <strong>fun!</strong></p>
+        </section>
+      </section>
+      <section>
+        <h1>Thank you!</h1>
+      </section>
+    </div>
+  </div>
+
+  <script src="dist/reveal.js"></script>
+  <script src="plugin/notes/notes.js"></script>
+  <script src="plugin/highlight/highlight.js"></script>
+  <script>
+    // More info about initialization & config:
+    // - https://revealjs.com/initialization/
+    // - https://revealjs.com/config/
+    Reveal.initialize({
+      hash: true,
+      // transition: 'none',
+      transitionSpeed: "fast",
+
+      // Learn about plugins: https://revealjs.com/plugins/
+      plugins: [RevealHighlight, RevealNotes]
+    });
+  </script>
+</body>
+
+</html>
